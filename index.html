@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPX 1km 웨이포인트 자동 생성기</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 0;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 32px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background-color 0.2s;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--primary);
+      background-color: #eff6ff;
+    }
+    .dropzone input {
+      display: none;
+    }
+    .stats {
+      margin-top: 20px;
+      padding: 16px;
+      background: #f1f5f9;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.6;
+      display: none;
+    }
+    .stats strong {
+      color: var(--text);
+    }
+    button.btn {
+      display: none;
+      width: 100%;
+      margin-top: 20px;
+      padding: 12px;
+      background-color: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button.btn:hover {
+      background-color: var(--primary-hover);
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>GPX 1km 단위 웨이포인트 추가</h1>
+  <p>GPX 파일을 드롭하거나 선택하세요. 누적 이동 거리 기준 매 1km 지점(1km, 2km ...)에 웨이포인트를 생성하여 삽입합니다.</p>
+
+  <div class="dropzone" id="dropzone">
+    <span id="dropzone-text">여기를 클릭하거나 GPX 파일을 드래그하세요</span>
+    <input type="file" id="file-input" accept=".gpx" />
+  </div>
+
+  <div class="stats" id="stats"></div>
+  <button class="btn" id="download-btn">수정된 GPX 다운로드</button>
+</div>
+
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const statsDiv = document.getElementById('stats');
+  const downloadBtn = document.getElementById('download-btn');
+
+  let processedGpxContent = null;
+  let originalFileName = '';
+
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) {
+      handleFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleFile(e.target.files[0]);
+    }
+  });
+
+  function handleFile(file) {
+    if (!file.name.toLowerCase().endsWith('.gpx')) {
+      alert('.gpx 확장자 파일만 업로드할 수 있습니다.');
+      return;
+    }
+    originalFileName = file.name;
+    const reader = new FileReader();
+    reader.onload = (e) => processGpx(e.target.result);
+    reader.readAsText(file);
+  }
+
+  // Haversine 거리 계산 함수 (단위: 미터)
+  function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const toRad = (x) => (x * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  // 두 좌표 간 선형 보간
+  function interpolate(p1, p2, ratio) {
+    const lat = p1.lat + (p2.lat - p1.lat) * ratio;
+    const lon = p1.lon + (p2.lon - p1.lon) * ratio;
+    let ele = null;
+    if (p1.ele !== null && p2.ele !== null) {
+      ele = p1.ele + (p2.ele - p1.ele) * ratio;
+    }
+    return { lat, lon, ele };
+  }
+
+  function processGpx(gpxText) {
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(gpxText, "application/xml");
+
+    const parserError = xmlDoc.querySelector("parsererror");
+    if (parserError) {
+      alert("GPX 파일을 파싱하는 중 오류가 발생했습니다.");
+      return;
+    }
+
+    const trkpts = xmlDoc.querySelectorAll("trkpt");
+    if (trkpts.length < 2) {
+      alert("트랙 포인트(trkpt)가 부족합니다.");
+      return;
+    }
+
+    // 트랙 포인트 추출
+    const points = [];
+    trkpts.forEach((pt) => {
+      const lat = parseFloat(pt.getAttribute("lat"));
+      const lon = parseFloat(pt.getAttribute("lon"));
+      const eleEl = pt.querySelector("ele");
+      const ele = eleEl ? parseFloat(eleEl.textContent) : null;
+      points.push({ lat, lon, ele });
+    });
+
+    const waypointsToAdd = [];
+    let accumulatedDistance = 0;
+    let nextTargetDistance = 1000; // 1km 단위 (1000m)
+    let kmCount = 1;
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const segmentDistance = haversine(p1.lat, p1.lon, p2.lat, p2.lon);
+
+      while (accumulatedDistance + segmentDistance >= nextTargetDistance) {
+        const remainingDist = nextTargetDistance - accumulatedDistance;
+        const ratio = segmentDistance === 0 ? 0 : remainingDist / segmentDistance;
+        const targetPt = interpolate(p1, p2, ratio);
+
+        waypointsToAdd.push({
+          km: kmCount,
+          lat: targetPt.lat,
+          lon: targetPt.lon,
+          ele: targetPt.ele
+        });
+
+        kmCount++;
+        nextTargetDistance += 1000;
+      }
+
+      accumulatedDistance += segmentDistance;
+    }
+
+    // XML에 웨이포인트 노드 삽입
+    const gpxNode = xmlDoc.documentElement;
+    const firstTrkNode = xmlDoc.querySelector("trk, rte") || gpxNode.firstChild;
+
+    waypointsToAdd.forEach((wpt) => {
+      const wptNode = xmlDoc.createElement("wpt");
+      wptNode.setAttribute("lat", wpt.lat.toFixed(6));
+      wptNode.setAttribute("lon", wpt.lon.toFixed(6));
+
+      if (wpt.ele !== null) {
+        const eleNode = xmlDoc.createElement("ele");
+        eleNode.textContent = wpt.ele.toFixed(1);
+        wptNode.appendChild(eleNode);
+      }
+
+      const nameNode = xmlDoc.createElement("name");
+      nameNode.textContent = `${wpt.km}km`;
+      wptNode.appendChild(nameNode);
+
+      const symNode = xmlDoc.createElement("sym");
+      symNode.textContent = "Waypoint";
+      wptNode.appendChild(symNode);
+
+      gpxNode.insertBefore(wptNode, firstTrkNode);
+    });
+
+    // 직렬화
+    const serializer = new XMLSerializer();
+    processedGpxContent = serializer.serializeToString(xmlDoc);
+
+    // 통계 표시
+    const totalKm = (accumulatedDistance / 1000).toFixed(2);
+    statsDiv.style.display = 'block';
+    statsDiv.innerHTML = `
+      <strong>처리 결과:</strong><br />
+      총 이동 거리: <strong>${totalKm} km</strong><br />
+      생성된 1km 웨이포인트: <strong>${waypointsToAdd.length} 개</strong>
+    `;
+
+    downloadBtn.style.display = 'block';
+  }
+
+  downloadBtn.addEventListener('click', () => {
+    if (!processedGpxContent) return;
+    const blob = new Blob([processedGpxContent], { type: 'application/gpx+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    
+    const baseName = originalFileName.replace(/\.gpx$/i, '');
+    link.href = url;
+    link.download = `${baseName}_1km_waypoints.gpx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
+</script>
+
+</body>
+</html>
